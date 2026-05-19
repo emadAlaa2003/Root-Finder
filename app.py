@@ -322,154 +322,260 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Preview of current input ────────────────────────────────────────────────
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.metric("g(x)", equation_input if equation_input else "—")
-with c2:
-    st.metric("Initial guess x₀", f"{x0_val:.4f}")
-with c3:
-    st.metric("Tolerance ε", f"{tol:.0e}")
-
-st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+# ─── Tabs ──────────────────────────────────────────────────────────────────────
+tab_solver, tab_algo = st.tabs(["🧮 Solver", "💻 Core Algorithm"])
 
 
-# ─── Computation ───────────────────────────────────────────────────────────────
-if calculate:
-    if not equation_input.strip():
-        st.error("⚠️  Please enter a function g(x) in the sidebar before calculating.")
-        st.stop()
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 1 — SOLVER
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_solver:
 
-    x = sp.symbols('x')
+    # ── Preview of current input ────────────────────────────────────────────
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("g(x)", equation_input if equation_input else "—")
+    with c2:
+        st.metric("Initial guess x₀", f"{x0_val:.4f}")
+    with c3:
+        st.metric("Tolerance ε", f"{tol:.0e}")
 
-    with st.spinner("Analysing convergence and running iterations…"):
-        try:
-            # ── 1. Parse ──────────────────────────────────────────────────
-            phi = sp.sympify(equation_input)
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-            # ── 2. Differentiate ──────────────────────────────────────────
-            phi_prime = sp.diff(phi, x)
-
-            # ── 3. Convergence check ──────────────────────────────────────
-            derivative_value = float(abs(phi_prime.subs(x, x0_val).evalf()))
-
-        except Exception:
-            st.error(
-                "⚠️  **Invalid expression.** Could not parse the function. "
-                "Check the Syntax Reference in the sidebar — use `x**2` not `x^2`, "
-                "and `exp(x)` not `e^x`."
-            )
+    # ─── Computation ───────────────────────────────────────────────────────────────
+    if calculate:
+        if not equation_input.strip():
+            st.error("⚠️  Please enter a function g(x) in the sidebar before calculating.")
             st.stop()
 
-    # ── Analysis panel ───────────────────────────────────────────────────────
-    st.markdown('<div class="panel-label">📊 Convergence Analysis</div>', unsafe_allow_html=True)
+        x = sp.symbols('x')
 
-    # Derivative chip
+        with st.spinner("Analysing convergence and running iterations…"):
+            try:
+                # ── 1. Parse ──────────────────────────────────────────────────
+                phi = sp.sympify(equation_input)
+
+                # ── 2. Differentiate ──────────────────────────────────────────
+                phi_prime = sp.diff(phi, x)
+
+                # ── 3. Convergence check ──────────────────────────────────────
+                derivative_value = float(abs(phi_prime.subs(x, x0_val).evalf()))
+
+            except Exception:
+                st.error(
+                    "⚠️  **Invalid expression.** Could not parse the function. "
+                    "Check the Syntax Reference in the sidebar — use `x**2` not `x^2`, "
+                    "and `exp(x)` not `e^x`."
+                )
+                st.stop()
+
+        # ── Analysis panel ───────────────────────────────────────────────────────
+        st.markdown('<div class="panel-label">📊 Convergence Analysis</div>', unsafe_allow_html=True)
+
+        # Derivative chip
+        st.markdown(
+            f'<div class="deriv-chip">'
+            f'<span class="label">|g′(x₀)|</span>'
+            f'= &nbsp;<strong>{derivative_value:.6f}</strong>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        run_loop = False
+        if derivative_value < 0.5:
+            st.markdown(
+                '<div class="badge badge-fast">🏎️ &nbsp;Fast Convergence &nbsp;·&nbsp; |g′| &lt; 0.5</div>',
+                unsafe_allow_html=True,
+            )
+            run_loop = True
+        elif derivative_value < 1.0:
+            st.markdown(
+                '<div class="badge badge-slow">🐢 &nbsp;Slow Convergence &nbsp;·&nbsp; 0.5 ≤ |g′| &lt; 1</div>',
+                unsafe_allow_html=True,
+            )
+            run_loop = True
+        else:
+            st.markdown(
+                '<div class="badge badge-diverge">❌ &nbsp;Divergence &nbsp;·&nbsp; |g′| ≥ 1</div>',
+                unsafe_allow_html=True,
+            )
+            st.error(
+                "The Banach condition **|g′(x₀)| < 1** is not satisfied at x₀. "
+                "The iteration will **diverge**. Try a different g(x) or a different starting point."
+            )
+
+        # ── Iteration loop ───────────────────────────────────────────────────────
+        if run_loop:
+            st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+            phi_func    = sp.lambdify(x, phi, "math")
+            x_current   = x0_val
+            found_root  = False
+            iterations  = []     # collect (step, x_next) — backend unchanged
+
+            with st.spinner(f"Iterating (tolerance ε = {tol:.0e}, max {max_iter} steps)…"):
+                for step in range(1, max_iter + 1):
+                    x_next = phi_func(x_current)
+                    iterations.append((step, x_next))
+
+                    if abs(x_next - x_current) < tol:
+                        found_root = True
+                        break
+
+                    x_current = x_next
+
+            # ── Result banner ────────────────────────────────────────────────
+            if found_root:
+                final_root  = iterations[-1][1]
+                total_steps = iterations[-1][0]
+
+                # st.metric row
+                m1, m2, m3 = st.columns(3)
+                with m1:
+                    st.metric("🎯 Fixed-Point Root", f"{final_root:.8f}")
+                with m2:
+                    st.metric("🔄 Iterations Used", total_steps)
+                with m3:
+                    st.metric("📉 |g′(x₀)|", f"{derivative_value:.6f}")
+
+                st.markdown(
+                    f'<div class="result-banner">'
+                    f'  <div class="rb-label">✅ Converged — Fixed-Point Root</div>'
+                    f'  <div class="rb-value">x* ≈ {final_root:.8f}</div>'
+                    f'  <div class="rb-sub">Found in {total_steps} iteration{"s" if total_steps != 1 else ""} '
+                    f'&nbsp;·&nbsp; ε = {tol:.0e}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.error(
+                    f"🛑 **Did not converge** within {max_iter} iterations. "
+                    "Try increasing the max iteration count, loosening the tolerance, "
+                    "or choosing a different g(x)."
+                )
+
+            # ── Iteration log (hidden in expander) ──────────────────────────
+            st.markdown("")
+            with st.expander(f"🔬 View full iteration log ({len(iterations)} steps)"):
+                # Build the HTML table in one shot for performance
+                rows = []
+                for i, (step, val) in enumerate(iterations):
+                    is_last = (i == len(iterations) - 1) and found_root
+                    cls     = "hi" if is_last else "v"
+                    rows.append(
+                        f'<div>'
+                        f'<span class="n">#{step:>3}</span>'
+                        f'  x&nbsp;=&nbsp;<span class="{cls}">{val:.10f}</span>'
+                        f'{"  ← ✓ converged" if is_last else ""}'
+                        f'</div>'
+                    )
+                st.markdown(
+                    f'<div class="iter-log">{"".join(rows)}</div>',
+                    unsafe_allow_html=True,
+                )
+
+    else:
+        # ── Idle placeholder ─────────────────────────────────────────────────────
+        st.info(
+            "👈  **Enter your iteration function g(x) in the sidebar**, set your initial guess, "
+            "then click **▶ Find Root** to begin. "
+            "Check the Syntax Reference in the sidebar if you're unsure about formatting."
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — CORE ALGORITHM
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_algo:
+
+    st.markdown("## 💻 Core Algorithm — Fixed-Point Iteration")
     st.markdown(
-        f'<div class="deriv-chip">'
-        f'<span class="label">|g′(x₀)|</span>'
-        f'= &nbsp;<strong>{derivative_value:.6f}</strong>'
-        f'</div>',
-        unsafe_allow_html=True,
+        "This tab walks through the **pure backend logic** of the solver, "
+        "stripped of all UI code. Three stages: parse, analyse, iterate."
     )
 
-    run_loop = False
-    if derivative_value < 0.5:
-        st.markdown(
-            '<div class="badge badge-fast">🏎️ &nbsp;Fast Convergence &nbsp;·&nbsp; |g′| &lt; 0.5</div>',
-            unsafe_allow_html=True,
-        )
-        run_loop = True
-    elif derivative_value < 1.0:
-        st.markdown(
-            '<div class="badge badge-slow">🐢 &nbsp;Slow Convergence &nbsp;·&nbsp; 0.5 ≤ |g′| &lt; 1</div>',
-            unsafe_allow_html=True,
-        )
-        run_loop = True
-    else:
-        st.markdown(
-            '<div class="badge badge-diverge">❌ &nbsp;Divergence &nbsp;·&nbsp; |g′| ≥ 1</div>',
-            unsafe_allow_html=True,
-        )
-        st.error(
-            "The Banach condition **|g′(x₀)| < 1** is not satisfied at x₀. "
-            "The iteration will **diverge**. Try a different g(x) or a different starting point."
-        )
+    # ── Stage 1: Parsing ──────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Stage 1 — Parse the User Input with SymPy")
+    st.markdown(
+        "The user's string (e.g. `\"(1 - x**2)**(1/3)\"`) is converted into a "
+        "**symbolic expression** using `sympy.sympify()`. This lets us do exact "
+        "algebra on it — no floating-point approximation at this stage."
+    )
+    st.code("""\
+import sympy as sp
 
-    # ── Iteration loop ───────────────────────────────────────────────────────
-    if run_loop:
-        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+x = sp.symbols('x')
 
-        phi_func    = sp.lambdify(x, phi, "math")
-        x_current   = x0_val
-        found_root  = False
-        iterations  = []     # collect (step, x_next) — backend unchanged
+# Convert the raw string into a SymPy expression
+phi = sp.sympify(equation_input)
+# e.g. phi = (1 - x**2)**(1/3)
+""", language="python")
 
-        with st.spinner(f"Iterating (tolerance ε = {tol:.0e}, max {max_iter} steps)…"):
-            for step in range(1, max_iter + 1):
-                x_next = phi_func(x_current)
-                iterations.append((step, x_next))
+    # ── Stage 2: Convergence check ────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Stage 2 — Check the Convergence Condition")
+    st.markdown(
+        "We differentiate g(x) symbolically and evaluate |g′(x₀)| at the initial guess. "
+        "The **Banach fixed-point theorem** tells us convergence is guaranteed when this value is **< 1**. "
+        "The closer it is to 0, the faster the method converges."
+    )
+    st.code("""\
+# Differentiate g(x) symbolically
+phi_prime = sp.diff(phi, x)
 
-                if abs(x_next - x_current) < tol:
-                    found_root = True
-                    break
+# Evaluate the derivative magnitude at the starting point x0
+derivative_value = float(abs(phi_prime.subs(x, x0_val).evalf()))
 
-                x_current = x_next
+# Decision logic
+if derivative_value < 0.5:
+    print("Fast convergence  ✅  |g'| < 0.5")
+elif derivative_value < 1.0:
+    print("Slow convergence  ⚠️   0.5 ≤ |g'| < 1")
+else:
+    print("Divergence        ❌  |g'| ≥ 1 — method will not converge")
+""", language="python")
 
-        # ── Result banner ────────────────────────────────────────────────
-        if found_root:
-            final_root  = iterations[-1][1]
-            total_steps = iterations[-1][0]
+    # ── Stage 3: Iteration loop ───────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Stage 3 — Run the Iteration Loop")
+    st.markdown(
+        "If the convergence condition is satisfied, `sp.lambdify()` converts the SymPy "
+        "expression into a fast numerical Python function. We then apply the recurrence "
+        "**xₙ₊₁ = g(xₙ)** repeatedly until the change between successive iterates "
+        "falls below the tolerance ε, or the maximum iteration count is reached."
+    )
+    st.code("""\
+import math
 
-            # st.metric row
-            m1, m2, m3 = st.columns(3)
-            with m1:
-                st.metric("🎯 Fixed-Point Root", f"{final_root:.8f}")
-            with m2:
-                st.metric("🔄 Iterations Used", total_steps)
-            with m3:
-                st.metric("📉 |g′(x₀)|", f"{derivative_value:.6f}")
+# Convert symbolic expression to a callable numeric function
+phi_func = sp.lambdify(x, phi, "math")
 
-            st.markdown(
-                f'<div class="result-banner">'
-                f'  <div class="rb-label">✅ Converged — Fixed-Point Root</div>'
-                f'  <div class="rb-value">x* ≈ {final_root:.8f}</div>'
-                f'  <div class="rb-sub">Found in {total_steps} iteration{"s" if total_steps != 1 else ""} '
-                f'&nbsp;·&nbsp; ε = {tol:.0e}</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.error(
-                f"🛑 **Did not converge** within {max_iter} iterations. "
-                "Try increasing the max iteration count, loosening the tolerance, "
-                "or choosing a different g(x)."
-            )
+x_current = x0_val      # starting point (user-supplied)
+max_iterations = 100    # safety cap
+tolerance = 1e-6        # convergence threshold ε
 
-        # ── Iteration log (hidden in expander) ──────────────────────────
-        st.markdown("")
-        with st.expander(f"🔬 View full iteration log ({len(iterations)} steps)"):
-            # Build the HTML table in one shot for performance
-            rows = []
-            for i, (step, val) in enumerate(iterations):
-                is_last = (i == len(iterations) - 1) and found_root
-                cls     = "hi" if is_last else "v"
-                rows.append(
-                    f'<div>'
-                    f'<span class="n">#{step:>3}</span>'
-                    f'  x&nbsp;=&nbsp;<span class="{cls}">{val:.10f}</span>'
-                    f'{"  ← ✓ converged" if is_last else ""}'
-                    f'</div>'
-                )
-            st.markdown(
-                f'<div class="iter-log">{"".join(rows)}</div>',
-                unsafe_allow_html=True,
-            )
+for step in range(1, max_iterations + 1):
+    x_next = phi_func(x_current)          # apply g(x)
+
+    if abs(x_next - x_current) < tolerance:
+        print(f"Root found after {step} iterations: x* ≈ {x_next:.8f}")
+        break
+
+    x_current = x_next                    # advance to next iterate
 
 else:
-    # ── Idle placeholder ─────────────────────────────────────────────────────
-    st.info(
-        "👈  **Enter your iteration function g(x) in the sidebar**, set your initial guess, "
-        "then click **▶ Find Root** to begin. "
-        "Check the Syntax Reference in the sidebar if you're unsure about formatting."
+    print("Did not converge within the maximum number of iterations.")
+""", language="python")
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Key Libraries")
+    st.markdown(
+        "| Library | Role |\n"
+        "|---|---|\n"
+        "| `sympy.sympify()` | Parse string → symbolic expression |\n"
+        "| `sympy.diff()` | Exact symbolic differentiation |\n"
+        "| `sympy.lambdify()` | Compile symbolic expr → fast numeric function |\n"
+        "| `math` (via lambdify) | Backend for numerical evaluation |"
     )
