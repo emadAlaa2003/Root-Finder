@@ -341,7 +341,7 @@ with tab_solver:
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
     # ── Calculation block ────────────────────────────────────────────────────
-    if calculate:
+    if st.session_state["calculated"]:
         if not equation_input.strip():
             st.error("⚠️  Please enter an equation in the sidebar before calculating.")
             st.stop()
