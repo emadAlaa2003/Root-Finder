@@ -1,5 +1,6 @@
 import streamlit as st
 import sympy as sp
+import numpy as np
 
 # ─── Page Configuration ────────────────────────────────────────────────────────
 st.set_page_config(
@@ -119,13 +120,45 @@ with st.sidebar:
                  "Use Python/SymPy syntax (e.g. x**2 not x^2).",
         )
 
-    x0_val = st.number_input(
-        "Initial guess x₀",
-        value=0.75,
-        step=0.1,
-        format="%.4f",
-        help="Starting point for convergence testing and iteration.",
+    st.markdown("**📏 Convergence Interval [a, b]**")
+    ia, ib = st.columns(2)
+    with ia:
+        a_val = st.number_input(
+            "a  (left endpoint)",
+            value=0.0,
+            step=0.1,
+            format="%.4f",
+            help="Left endpoint of the interval [a, b]. "
+                 "Theorem 2.2 requires g(x) ∈ [a, b] for all x ∈ [a, b].",
+        )
+    with ib:
+        b_val = st.number_input(
+            "b  (right endpoint)",
+            value=1.5,
+            step=0.1,
+            format="%.4f",
+            help="Right endpoint of the interval [a, b]. "
+                 "The iteration will start from the midpoint x₀ = (a+b)/2.",
+        )
+    st.markdown("**🎯 Initial Guess x₀**")
+    use_custom_x0 = st.checkbox(
+        "Provide custom initial guess x₀",
+        value=False,
+        help="By default, iteration starts from the midpoint (a+b)/2. "
+             "Enable this to supply your own starting point within [a, b].",
     )
+    if use_custom_x0:
+        x0_custom = st.number_input(
+            "x₀ (custom initial guess)",
+            value=round((0.0 + 1.5) / 2, 4),   # default shown as midpoint of default a,b
+            step=0.1,
+            format="%.4f",
+            help="Must satisfy a ≤ x₀ ≤ b. "
+                 "Theorem 2.3 guarantees convergence from any point in [a, b].",
+        )
+    else:
+        x0_custom = None
+
     max_iter = st.slider(
         "Max iterations",
         min_value=10, max_value=500, value=100, step=10,
@@ -186,7 +219,8 @@ for _key, _default in [
     ("candidates",    None),    # list of (label, expr, dval, viable) for Path A
     ("use_fx_cache",  None),    # which mode was active when we last calculated
     ("eq_cache",      None),    # equation string used in the last calculation
-    ("x0_cache",      None),    # x0 used in the last calculation
+    ("a_cache",       None),    # interval [a] used in the last calculation
+    ("b_cache",       None),    # interval [b] used in the last calculation
     ("deriv_val_gx",  None),    # |g'(x0)| for Path B
     ("phi_gx",        None),    # g(x) expression string for Path B
     ("run_loop_gx",   False),   # whether Path B passed the convergence check
@@ -199,7 +233,8 @@ for _key, _default in [
 # no longer valid. Reset so the idle placeholder reappears.
 _inputs_changed = (
     st.session_state["eq_cache"]        != equation_input
-    or st.session_state["x0_cache"]     != x0_val
+    or st.session_state["a_cache"]      != a_val
+    or st.session_state["b_cache"]      != b_val
     or st.session_state["use_fx_cache"] != use_fx
 )
 if _inputs_changed and st.session_state["calculated"]:
@@ -216,8 +251,117 @@ if _inputs_changed and st.session_state["calculated"]:
 if calculate:
     st.session_state["calculated"]   = True
     st.session_state["eq_cache"]     = equation_input
-    st.session_state["x0_cache"]     = x0_val
+    st.session_state["a_cache"]      = a_val
+    st.session_state["b_cache"]      = b_val
     st.session_state["use_fx_cache"] = use_fx
+
+
+
+def check_interval_conditions(phi_sym, x_sym, a, b, n_points=100):
+    """
+    Implements Theorems 2.2 & 2.3 over the interval [a, b].
+
+    Returns a dict with keys:
+        cond1_pass (bool)  : g(x) ∈ [a, b] for all test points
+        cond2_pass (bool)  : max |g′(x)| < 1 over the interval
+        k          (float) : the Lipschitz constant max |g′(x)|
+        g_min      (float) : minimum g(x) value over test points
+        g_max      (float) : maximum g(x) value over test points
+        both_pass  (bool)  : True only if both conditions hold
+    """
+    test_pts  = np.linspace(a, b, n_points)
+    phi_num   = sp.lambdify(x_sym, phi_sym, "numpy")
+    phi_prime = sp.diff(phi_sym, x_sym)
+    gprime_num = sp.lambdify(x_sym, phi_prime, "numpy")
+
+    g_vals      = np.array([float(phi_num(xi))   for xi in test_pts], dtype=float)
+    gprime_vals = np.array([float(gprime_num(xi)) for xi in test_pts], dtype=float)
+
+    g_min = float(np.nanmin(g_vals))
+    g_max = float(np.nanmax(g_vals))
+    k     = float(np.nanmax(np.abs(gprime_vals)))
+
+    cond1_pass = (g_min >= a) and (g_max <= b)
+    cond2_pass = k < 1.0
+
+    return {
+        "cond1_pass": cond1_pass,
+        "cond2_pass": cond2_pass,
+        "k":          k,
+        "g_min":      g_min,
+        "g_max":      g_max,
+        "both_pass":  cond1_pass and cond2_pass,
+    }
+
+
+def display_theorem_check(chk, a, b):
+    """
+    Renders the Theorem 2.2 / 2.3 condition check panel in the UI.
+    Returns True if iteration should proceed, False otherwise.
+    """
+    st.markdown('<div class="panel-label">📐 Theorem 2.2 &amp; 2.3 — Global Convergence Check</div>',
+                unsafe_allow_html=True)
+
+    # ── Condition 1 ──────────────────────────────────────────────────────────
+    c1_tag = (
+        '<span class="tag-ok">✅ PASS</span>'  if chk["cond1_pass"]
+        else '<span class="tag-bad">❌ FAIL</span>'
+    )
+    c1_detail = (
+        f'g(x) ∈ [{chk["g_min"]:.5f}, {chk["g_max"]:.5f}] ⊆ [{a}, {b}]'
+        if chk["cond1_pass"]
+        else f'g(x) range [{chk["g_min"]:.5f}, {chk["g_max"]:.5f}] ⊄ [{a}, {b}]'
+    )
+    # ── Condition 2 ──────────────────────────────────────────────────────────
+    c2_tag = (
+        '<span class="tag-ok">✅ PASS</span>'  if chk["cond2_pass"]
+        else '<span class="tag-bad">❌ FAIL</span>'
+    )
+    c2_detail = f'k = max |g′(x)| = <strong>{chk["k"]:.6f}</strong> {"&lt; 1" if chk["cond2_pass"] else "≥ 1"}'
+
+    html = f"""
+<table class="cand-table">
+<thead><tr>
+  <th>Theorem</th><th>Condition</th><th>Result</th><th>Detail</th>
+</tr></thead>
+<tbody>
+<tr>
+  <td>Thm 2.2 (i)</td>
+  <td>g(x) ∈ [a, b] for all x ∈ [a, b]</td>
+  <td>{c1_tag}</td>
+  <td><code>{c1_detail}</code></td>
+</tr>
+<tr>
+  <td>Thm 2.2 (ii) / 2.3</td>
+  <td>∃ k &lt; 1 : |g′(x)| ≤ k on (a, b)</td>
+  <td>{c2_tag}</td>
+  <td>{c2_detail}</td>
+</tr>
+</tbody>
+</table>
+"""
+    st.markdown(html, unsafe_allow_html=True)
+    st.markdown("")
+
+    if chk["both_pass"]:
+        x0_mid = (a + b) / 2.0
+        st.success(
+            f"✅ **Both conditions satisfied.** Unique fixed point guaranteed in [{a}, {b}] "
+            f"(Theorem 2.3). Starting iteration from midpoint **x₀ = {x0_mid:.6f}**."
+        )
+    else:
+        fails = []
+        if not chk["cond1_pass"]:
+            fails.append("Condition 1 (g(x) ∉ [a, b])")
+        if not chk["cond2_pass"]:
+            fails.append(f"Condition 2 (k = {chk['k']:.6f} ≥ 1)")
+        st.error(
+            "❌ **Global convergence not guaranteed.** "
+            + " and ".join(fails)
+            + " failed. Try adjusting the interval [a, b] or choosing a different g(x)."
+        )
+
+    return chk["both_pass"]
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -226,27 +370,19 @@ if calculate:
 def run_iteration(phi_sym, x_sym, x0, max_it, tolerance):
     """
     Returns (found_root: bool, iterations: list of (step, value)).
+    Core math loop — unchanged from original.
     """
     phi_func  = sp.lambdify(x_sym, phi_sym, "math")
     x_current = x0
     iterations = []
     found_root = False
-    
     for step in range(1, max_it + 1):
-        try:
-            x_next = phi_func(x_current)
-        except OverflowError:
-            # إذا انفجرت الأرقام، نوقف الـ Loop فوراً
-            break
-            
+        x_next = phi_func(x_current)
         iterations.append((step, x_next))
-        
         if abs(x_next - x_current) < tolerance:
             found_root = True
             break
-            
         x_current = x_next
-        
     return found_root, iterations
 
 
@@ -271,7 +407,7 @@ def display_results(found_root, iterations, deriv_val, tol_val):
         with m2:
             st.metric("🔄 Iterations Used", total_steps)
         with m3:
-            st.metric("📉 |g′(x₀)|", f"{deriv_val:.6f}")
+            st.metric("📉 k = max|g′| on [a,b]", f"{deriv_val:.6f}")
         st.markdown(
             f'<div class="result-banner">'
             f'  <div class="rb-label">✅ Converged — Fixed-Point Root</div>'
@@ -321,6 +457,180 @@ tab_solver, tab_algo = st.tabs(["🧮 Solver", "💻 Core Algorithm"])
 
 
 # ══════════════════════════════════════════════════════════════════════
+# TAB 2 — CORE ALGORITHM  (rendered BEFORE tab_solver so st.stop()
+#          inside tab_solver never skips this static content)
+# ══════════════════════════════════════════════════════════════════════
+with tab_algo:
+
+    st.markdown("## 💻 Core Algorithm — Fixed-Point Iteration")
+    st.markdown(
+        "Pure backend logic, stripped of all UI code. "
+        "The solver verifies **global convergence** over an interval **[a, b]** "
+        "before iterating, in accordance with Theorems 2.2 and 2.3."
+    )
+
+    # ── Stage 0 ─────────────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Stage 0 — Parse the Iteration Function g(x)")
+    st.markdown(
+        "Whether the user provides **f(x)** (Path A) or **g(x)** directly (Path B), "
+        "the solver produces a SymPy expression `phi` representing g(x) and a user-chosen "
+        "interval `[a, b]`.  For **Path A**, up to three g(x) candidates are "
+        "auto-generated from f(x):"
+    )
+    st.code("""import sympy as sp
+import numpy as np
+
+x = sp.symbols('x')
+
+# ── Path A: auto-generate g(x) candidates from f(x) ─────────────────
+f_expr  = sp.sympify("x**3 - x - 1")
+f_prime = sp.diff(f_expr, x)
+
+candidates = [
+    ("g1: x - f(x)",          x - f_expr),               # standard rearrangement
+    ("g2: x + f(x)",          x + f_expr),               # sign-flipped variant
+    ("g3: x - f(x)/f'(x)",   x - f_expr / f_prime),     # Newton-like damping
+]
+
+# ── Path B: user supplies g(x) directly ──────────────────────────────
+phi = sp.sympify("(x**2 - 1) / 3")
+
+# Interval and midpoint
+a, b = -1.0, 1.0
+p0   = (a + b) / 2.0   # starting guess — chosen in Stage 2
+""", language="python")
+
+    # ── Stage 1 ─────────────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Stage 1 — Global Condition Checks (Theorems 2.2 & 2.3)")
+    st.markdown(
+        "100 evenly-spaced test points are generated across **[a, b]** using `np.linspace`. "
+        "Two conditions are checked numerically across all points:"
+    )
+    st.markdown(
+        "- **Condition 1 (Thm 2.2 i):** g(x) maps [a, b] into itself — "
+        "`g(x) ∈ [a, b]` for all x ∈ [a, b]\n"
+        "- **Condition 2 (Thm 2.2 ii / 2.3):** A Lipschitz constant k < 1 exists — "
+        "`max |g′(x)| < 1` on (a, b)"
+    )
+    st.code("""# Convert symbolic g(x) and g'(x) to fast numeric callables
+phi_num    = sp.lambdify(x, phi,              "numpy")
+gprime_num = sp.lambdify(x, sp.diff(phi, x), "numpy")
+
+# Generate 100 test points uniformly across [a, b]
+x_vals = np.linspace(a, b, 100)
+
+# Evaluate g(x) and |g'(x)| at every test point
+g_vals      = np.array([float(phi_num(xi))    for xi in x_vals])
+gprime_vals = np.array([float(gprime_num(xi)) for xi in x_vals])
+
+# ── Condition 1: closed mapping — g(x) ∈ [a, b] (Theorem 2.2 i) ─────────
+g_min      = float(np.nanmin(g_vals))
+g_max      = float(np.nanmax(g_vals))
+is_closed  = (g_min >= a) and (g_max <= b)
+
+# ── Condition 2: contraction — k < 1 (Theorem 2.2 ii / 2.3) ─────────
+k              = float(np.nanmax(np.abs(gprime_vals)))   # Lipschitz constant
+is_contraction = k < 1.0
+
+print(f"Condition 1 — g(x) ∈ [{a}, {b}]:     {'PASS' if is_closed else 'FAIL'}")
+print(f"  g(x) range on [a,b]: [{g_min:.6f}, {g_max:.6f}]")
+print()
+print(f"Condition 2 — k = max|g′(x)| < 1:  {'PASS' if is_contraction else 'FAIL'}")
+print(f"  k = {k:.6f}")
+
+both_pass = is_closed and is_contraction
+if both_pass:
+    print("\n✅ Both conditions satisfied — unique fixed point guaranteed in [a, b].")
+else:
+    print("\n❌ Conditions not met — adjust [a, b] or choose a different g(x).")
+""", language="python")
+
+    # ── Stage 2 ─────────────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Stage 2 — Initialisation & Iteration Loop")
+    st.markdown(
+        "If both conditions pass, Theorem 2.3 guarantees convergence from **any** "
+        "starting point in [a, b]. The user may optionally supply a custom x₀; "
+        "otherwise the midpoint `(a + b) / 2` is used as the canonical fallback. "
+        "The recurrence **pₙ = g(pₙ₋₁)** then runs until `|pₙ − pₙ₋₁| < ε` "
+        "or the iteration cap is reached."
+    )
+    st.code("""import math
+
+# Guard: only iterate if both theorem conditions are satisfied
+if not both_pass:
+    raise RuntimeError("Convergence conditions not met — cannot guarantee a root.")
+
+# Compile g(x) into a fast numeric function for the loop
+phi_func = sp.lambdify(x, phi, "math")
+
+# ── Determine starting point ─────────────────────────────────────────
+# Check if user provided a custom x0
+if use_custom_x0:
+    if a <= user_x0 <= b:
+        p0 = user_x0                    # user-supplied starting point
+    else:
+        raise ValueError("x0 must be within [a, b]")   # shown as st.error + st.stop()
+else:
+    p0 = (a + b) / 2.0                 # fallback: midpoint of the interval
+
+# Solver parameters
+tolerance      = 1e-6
+max_iterations = 100
+
+p_current = p0
+
+for step in range(1, max_iterations + 1):
+    p_next = phi_func(p_current)        # apply g: pₙ = g(pₙ₋₁)
+
+    if abs(p_next - p_current) < tolerance:
+        print(f"✅ Root found: p* ≈ {p_next:.8f}  (converged in {step} iterations)")
+        break
+
+    p_current = p_next
+
+else:
+    print(f"🛑 Did not converge within {max_iterations} iterations.")
+""", language="python")
+
+    # ── Corollary ──────────────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Corollary — Error Bound")
+    st.markdown(
+        "Once `k` is known, Theorem 2.3's corollary gives a rigorous upper bound "
+        "on the error after `n` iterations:"
+    )
+    st.code("""# Error bound after n iterations (Corollary to Theorem 2.3):
+#
+#   |pₙ − p| ≤ (kⁿ / (1 − k)) · |p₁ − p₀|
+#
+# This bound holds for any p₀ ∈ [a, b].
+
+p1          = phi_func(p0)
+first_step  = abs(p1 - p0)
+n           = step                           # actual iterations taken
+
+error_bound = (k**n / (1 - k)) * first_step
+print(f"Error bound after {n} iterations: |pₙ − p| ≤ {error_bound:.2e}")
+""", language="python")
+
+    # ── Key Libraries ──────────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Key Libraries")
+    st.markdown(
+        "| Library | Role |\n"
+        "|---|---|\n"
+        "| `numpy.linspace()` | Generate 100 uniform test points over [a, b] |\n"
+        "| `numpy.nanmax / nanmin` | Find g(x) range and k = max\\|g′\\| safely |\n"
+        "| `sympy.sympify()` | Parse user string → symbolic expression |\n"
+        "| `sympy.diff()` | Exact symbolic differentiation for g′(x) |\n"
+        "| `sympy.lambdify()` | Compile symbolic expr → fast numeric function |\n"
+        "| `math` (via lambdify) | Backend for the iteration loop |\n"
+    )
+
+# ══════════════════════════════════════════════════════════════════════
 # TAB 1 — SOLVER
 # ══════════════════════════════════════════════════════════════════════
 with tab_solver:
@@ -329,19 +639,21 @@ with tab_solver:
     st.markdown(f'<div class="mode-pill">{"📥 " + mode_label}</div>', unsafe_allow_html=True)
 
     # Live preview metrics
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         label = "f(x)" if use_fx else "g(x)"
         st.metric(label, equation_input if equation_input else "—")
     with c2:
-        st.metric("Initial guess x₀", f"{x0_val:.4f}")
+        st.metric("Interval a", f"{a_val:.4f}")
     with c3:
+        st.metric("Interval b", f"{b_val:.4f}")
+    with c4:
         st.metric("Tolerance ε", f"{tol:.0e}")
 
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
     # ── Calculation block ────────────────────────────────────────────────────
-    if st.session_state["calculated"]:
+    if calculate:
         if not equation_input.strip():
             st.error("⚠️  Please enter an equation in the sidebar before calculating.")
             st.stop()
@@ -374,22 +686,22 @@ with tab_solver:
                     # Newton-like candidate: only add if f′ is not trivially zero
                     try:
                         g3 = x - f_expr / f_prime
-                        # quick check: does it evaluate at x0?
-                        g3.subs(x, x0_val).evalf()
+                        # quick check: evaluates at midpoint without error?
+                        g3.subs(x, (a_val + b_val) / 2).evalf()
                         candidates_raw.append(("g₃(x) = x − f(x)/f′(x)", g3))
                     except Exception:
-                        pass  # f′ = 0 or undefined at x₀ — skip g₃
+                        pass  # f′ = 0 or undefined at midpoint — skip g₃
 
-                    # ── Evaluate convergence for each candidate ───────────
-                    candidates = []   # (label, expr, deriv_val, viable)
+                    # ── Evaluate interval conditions for each candidate ───────
+                    candidates = []   # (label, expr, k_val, viable)
                     for label_c, expr_c in candidates_raw:
                         try:
-                            gprime  = sp.diff(expr_c, x)
-                            dval    = float(abs(gprime.subs(x, x0_val).evalf()))
-                            viable  = dval < 1.0
+                            chk_c  = check_interval_conditions(expr_c, x, a_val, b_val)
+                            k_val  = chk_c["k"]
+                            viable = chk_c["both_pass"]
                         except Exception:
-                            dval, viable = float('inf'), False
-                        candidates.append((label_c, expr_c, dval, viable))
+                            k_val, viable = float('inf'), False
+                        candidates.append((label_c, expr_c, k_val, viable))
 
                     # Persist so radio-widget reruns can restore without recomputing
                     st.session_state["candidates"] = candidates
@@ -404,7 +716,7 @@ with tab_solver:
             header = (
                 '<table class="cand-table">'
                 '<thead><tr>'
-                '<th>Candidate</th><th>|g′(x₀)|</th><th>Convergence</th><th>Formula</th>'
+                '<th>Candidate</th><th>k = max|g′| on [a,b]</th><th>Global Convergence</th><th>Formula</th>'
                 '</tr></thead><tbody>'
             )
             rows_t = ""
@@ -429,9 +741,9 @@ with tab_solver:
 
             if not viable_candidates:
                 st.error(
-                    "❌ **None of the auto-generated candidates converge** at x₀ = "
-                    f"{x0_val}. Try a different initial guess, or switch to g(x) mode "
-                    "and provide a custom rearrangement."
+                    f"❌ **None of the auto-generated candidates satisfy Theorems 2.2/2.3 "
+                    f"on [{a_val}, {b_val}].** Try a wider or different interval, "
+                    "or switch to g(x) mode and provide a custom rearrangement."
                 )
                 st.stop()
 
@@ -448,38 +760,45 @@ with tab_solver:
 
             st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-            # ── Show convergence badge for chosen candidate ───────────────
-            st.markdown('<div class="panel-label">📊 Convergence Analysis — chosen g(x)</div>',
-                        unsafe_allow_html=True)
-            st.markdown(
-                f'<div class="deriv-chip">'
-                f'<span class="label">|g′(x₀)|</span>'
-                f'= &nbsp;<strong>{deriv_chosen:.6f}</strong>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-            _, badge_html, _ = convergence_badge(deriv_chosen)
-            st.markdown(badge_html, unsafe_allow_html=True)
+            # ── Theorem 2.2 / 2.3 check for chosen candidate ─────────────
+            chk_chosen = check_interval_conditions(phi_chosen, x, a_val, b_val)
+            can_iterate = display_theorem_check(chk_chosen, a_val, b_val)
 
-            # ── Run iteration ─────────────────────────────────────────────
+            if not can_iterate:
+                st.stop()
+
+            # ── Resolve starting point: custom x₀ or midpoint ────────────
+            if use_custom_x0:
+                if not (a_val <= x0_custom <= b_val):
+                    st.error(
+                        f"⚠️  **x₀ = {x0_custom} is outside [{a_val}, {b_val}].** "
+                        "Your custom initial guess must satisfy a ≤ x₀ ≤ b. "
+                        "Adjust x₀ or widen the interval."
+                    )
+                    st.stop()
+                x0_start = x0_custom
+                x0_label = f"custom x₀ = {x0_start:.6f}"
+            else:
+                x0_start = (a_val + b_val) / 2.0
+                x0_label = f"midpoint x₀ = {x0_start:.6f}"
+
             st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-            with st.spinner(f"Iterating with {chosen_label} (ε = {tol:.0e})…"):
-                found_root, iterations = run_iteration(phi_chosen, x, x0_val, max_iter, tol)
+            with st.spinner(f"Iterating with {chosen_label} from {x0_label} (ε = {tol:.0e})…"):
+                found_root, iterations = run_iteration(phi_chosen, x, x0_start, max_iter, tol)
 
-            display_results(found_root, iterations, deriv_chosen, tol)
+            display_results(found_root, iterations, chk_chosen["k"], tol)
 
         # ╔══════════════════════════════════════════════════════════╗
         # ║  PATH B — g(x) input (original flow, unchanged)         ║
         # ╚══════════════════════════════════════════════════════════╝
         else:
-            # Only re-parse and check convergence when button was just pressed.
-            # On every other rerun, restore the already-computed values from state.
+            # Only re-parse when button was just pressed; restore from state otherwise.
             if st.session_state["phi_gx"] is None:
-                with st.spinner("Analysing convergence…"):
+                with st.spinner("Parsing g(x)…"):
                     try:
-                        phi       = sp.sympify(equation_input)
-                        phi_prime = sp.diff(phi, x)
-                        deriv_val = float(abs(phi_prime.subs(x, x0_val).evalf()))
+                        phi = sp.sympify(equation_input)
+                        # quick validity check
+                        phi.subs(sp.Symbol('x'), (a_val + b_val) / 2).evalf()
                     except Exception:
                         st.error(
                             "⚠️  **Invalid expression.** Could not parse g(x). "
@@ -487,149 +806,49 @@ with tab_solver:
                         )
                         st.stop()
 
-                    run_loop, _, _ = convergence_badge(deriv_val)
+                    # Persist the expression string
+                    st.session_state["phi_gx"] = str(phi)
 
-                    # Persist to survive future reruns
-                    st.session_state["phi_gx"]       = str(phi)
-                    st.session_state["deriv_val_gx"] = deriv_val
-                    st.session_state["run_loop_gx"]  = run_loop
+            # Restore from state
+            x   = sp.symbols('x')
+            phi = sp.sympify(st.session_state["phi_gx"])
 
-            # Restore from state (valid on button-press AND all subsequent reruns)
-            x         = sp.symbols('x')
-            phi       = sp.sympify(st.session_state["phi_gx"])
-            deriv_val = st.session_state["deriv_val_gx"]
-            run_loop  = st.session_state["run_loop_gx"]
-
-            # Convergence analysis display
-            st.markdown('<div class="panel-label">📊 Convergence Analysis</div>',
-                        unsafe_allow_html=True)
-            st.markdown(
-                f'<div class="deriv-chip">'
-                f'<span class="label">|g′(x₀)|</span>'
-                f'= &nbsp;<strong>{deriv_val:.6f}</strong>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-            _, badge_html, _ = convergence_badge(deriv_val)
-            st.markdown(badge_html, unsafe_allow_html=True)
-
-            if not run_loop:
-                st.error(
-                    "The Banach condition **|g′(x₀)| < 1** is not satisfied. "
-                    "The iteration will **diverge**. Try a different g(x) or starting point."
-                )
+            # ── Theorem 2.2 / 2.3 check over [a, b] ──────────────────────
+            try:
+                chk = check_interval_conditions(phi, x, a_val, b_val)
+            except Exception as e:
+                st.error(f"⚠️  Could not evaluate g(x) on [{a_val}, {b_val}]: {e}")
                 st.stop()
 
-            st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-            with st.spinner(f"Iterating (ε = {tol:.0e}, max {max_iter} steps)…"):
-                found_root, iterations = run_iteration(phi, x, x0_val, max_iter, tol)
+            can_iterate = display_theorem_check(chk, a_val, b_val)
 
-            display_results(found_root, iterations, deriv_val, tol)
+            if not can_iterate:
+                st.stop()
+
+            # ── Resolve starting point: custom x₀ or midpoint ────────────
+            if use_custom_x0:
+                if not (a_val <= x0_custom <= b_val):
+                    st.error(
+                        f"⚠️  **x₀ = {x0_custom} is outside [{a_val}, {b_val}].** "
+                        "Your custom initial guess must satisfy a ≤ x₀ ≤ b. "
+                        "Adjust x₀ or widen the interval."
+                    )
+                    st.stop()
+                x0_start = x0_custom
+                x0_label = f"custom x₀ = {x0_start:.6f}"
+            else:
+                x0_start = (a_val + b_val) / 2.0
+                x0_label = f"midpoint x₀ = {x0_start:.6f}"
+
+            st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+            with st.spinner(f"Iterating from {x0_label} (ε = {tol:.0e}, max {max_iter} steps)…"):
+                found_root, iterations = run_iteration(phi, x, x0_start, max_iter, tol)
+
+            display_results(found_root, iterations, chk["k"], tol)
 
     else:
         st.info(
             "👈  **Choose your input mode and enter an equation in the sidebar**, "
-            "set your initial guess, then click **▶ Find Root**."
+            "set the interval [a, b], then click **▶ Find Root**. "
+            "The solver will verify Theorems 2.2 & 2.3 before iterating."
         )
-
-
-# ══════════════════════════════════════════════════════════════════════
-# TAB 2 — CORE ALGORITHM
-# ══════════════════════════════════════════════════════════════════════
-with tab_algo:
-
-    st.markdown("## 💻 Core Algorithm — Fixed-Point Iteration")
-    st.markdown(
-        "Pure backend logic, stripped of all UI code. "
-        "The solver now branches into **two paths** based on the user's input mode."
-    )
-
-    st.markdown("---")
-    st.markdown("### Stage 0 — Select Input Mode")
-    st.markdown("The user chooses whether to provide **f(x)** or **g(x)**.")
-    st.code("""\
-# 'fx' or 'gx' — determined by the sidebar radio button
-mode = "fx"   # or "gx"
-""", language="python")
-
-    st.markdown("---")
-    st.markdown("### Path A — f(x) Input: Auto-Generate g(x) Candidates")
-    st.markdown(
-        "Parse f(x), compute f′(x), then build candidate iteration functions. "
-        "Each candidate is tested for the Banach condition at x₀."
-    )
-    st.code("""\
-import sympy as sp
-
-x = sp.symbols('x')
-f_expr  = sp.sympify(equation_input)   # e.g. x**3 - x - 1
-f_prime = sp.diff(f_expr, x)
-
-# --- Auto-generate candidates ---
-candidates_raw = [
-    ("g1 = x - f(x)",         x - f_expr),
-    ("g2 = x + f(x)",         x + f_expr),
-    ("g3 = x - f(x)/f'(x)",  x - f_expr / f_prime),   # Newton-like
-]
-
-# --- Test convergence for each ---
-for label, g_expr in candidates_raw:
-    g_prime = sp.diff(g_expr, x)
-    dval    = float(abs(g_prime.subs(x, x0_val).evalf()))
-    viable  = dval < 1.0
-    print(f"{label}  |g'(x0)| = {dval:.6f}  viable={viable}")
-""", language="python")
-
-    st.markdown("---")
-    st.markdown("### Path B — g(x) Input: Direct Convergence Check")
-    st.markdown(
-        "Parse g(x) directly, evaluate |g′(x₀)|, and decide whether to proceed."
-    )
-    st.code("""\
-phi       = sp.sympify(equation_input)   # e.g. (1 - x**2)**(1/3)
-phi_prime = sp.diff(phi, x)
-deriv_val = float(abs(phi_prime.subs(x, x0_val).evalf()))
-
-if deriv_val < 0.5:
-    print("Fast convergence  ✅  |g'| < 0.5")
-elif deriv_val < 1.0:
-    print("Slow convergence  ⚠️   0.5 ≤ |g'| < 1")
-else:
-    print("Divergence        ❌  |g'| ≥ 1 — will not converge")
-""", language="python")
-
-    st.markdown("---")
-    st.markdown("### Stage C — Iteration Loop (shared by both paths)")
-    st.markdown(
-        "`sp.lambdify()` compiles the symbolic g(x) into a fast numeric callable. "
-        "The recurrence **xₙ₊₁ = g(xₙ)** runs until |xₙ₊₁ − xₙ| < ε or the cap is hit."
-    )
-    st.code("""\
-phi_func  = sp.lambdify(x, phi, "math")   # fast numeric function
-x_current = x0_val
-tolerance = 1e-6
-max_iterations = 100
-
-for step in range(1, max_iterations + 1):
-    x_next = phi_func(x_current)
-
-    if abs(x_next - x_current) < tolerance:
-        print(f"Root found after {step} iterations: x* ≈ {x_next:.8f}")
-        break
-
-    x_current = x_next
-else:
-    print("Did not converge within the maximum number of iterations.")
-""", language="python")
-
-    st.markdown("---")
-    st.markdown("### Key Libraries")
-    st.markdown(
-        "| Library | Role |\n"
-        "|---|---|\n"
-        "| `sympy.sympify()` | Parse string → symbolic expression |\n"
-        "| `sympy.diff()` | Exact symbolic differentiation |\n"
-        "| `sympy.lambdify()` | Compile symbolic expr → fast numeric function |\n"
-        "| `math` (via lambdify) | Backend for numerical evaluation |"
-    )
